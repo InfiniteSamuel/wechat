@@ -20,4 +20,10 @@ def getPage():
 	except Exception as e:
 		if DEBUG:
 			print(type(e), e.args)
+
+
+def main():
+	pass
 	
+if __name__ == "__main__":
+	main()
