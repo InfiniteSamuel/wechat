@@ -1,2 +1,2 @@
 # wechat
-Yet another WeChat SDK
+Yet another WeChat on terminal.
