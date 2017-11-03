@@ -5,18 +5,26 @@
 @author: 'echo'
 '''
 
-import dryscrape # NOTE: This package is not actively maintained. It uses QtWebkit, which is end-of-life and probably doesn't get security fixes backported. Consider using a similar package like Spynner instead.
-import webkit_server
+from selenium import webdriver
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.by import By
+import selenium.common.exceptions
+import pickle
 import qrcode
 import os.path
+import sys, os, traceback
 
 DEBUG = True
 LOGINTIMEOUT = 60
 PAGELOADTIMEOUT = 15
+HEADLESS = True
 
 recentContacts = {}
 
-def qr_terminal_str(str,version=1):
+def qrTerminalStr(str,version=1):
 	white_block = '\033[0;37;47m  '
 	black_block = '\033[0;37;40m  '
 	new_line = '\033[0m\n'
@@ -36,72 +44,70 @@ def qr_terminal_str(str,version=1):
 	print(output)
 	return False
 
+def printIfDebug():
+	if DEBUG:
+		print("================================================")
+		exc_type, exc_value, exc_traceback = sys.exc_info()
+		traceback.print_exception(exc_type, exc_value, exc_traceback, limit=2, file=sys.stdout)
+		print("================================================")
+
 def getLoginPage():
 	# //img[@mm-src-load="qrcodeLoad"] for the login image
-	try:
-		session = dryscrape.Session()
-	except webkit_server.NoX11Error: 
-		dryscrape.start_xvfb()
-		session = dryscrape.Session()
-	except Exception as e:
-		if DEBUG:
-			print(e)
-	session.set_attribute('auto_load_images', False)
-	session.set_timeout(PAGELOADTIMEOUT)
-	session.set_header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.113 Safari/537.36")
-	if os.path.isfile("cookie"):
-		with open("cookie", "r") as f:
-			for line in f:
-				session.set_cookie(line)
+	chrome_options = Options()
+	if HEADLESS:
+		chrome_options.add_argument("--headless")
+	driver = webdriver.Chrome(executable_path=os.path.abspath("chromedriver"), chrome_options=chrome_options)
+	if os.path.isfile("cookies.pkl"):
+		driver.get("https://wx.qq.com/")
+		driver.delete_all_cookies()
+		cookies = pickle.load(open("cookies.pkl", "rb"))
+		for cookie in cookies:
+			driver.add_cookie(cookie)
 	#######################################################
-	while True:
-		try:
-			session.visit("https://wx.qq.com/")
-		except webkit_server.InvalidResponseError:
-			if DEBUG:
-				print("Retrying...")
-			continue
-		except Exception as e:
-			if DEBUG:
-				# print(type(e), e.args)
-				print(e)
-		link = session.at_xpath('//img[@mm-src-load="qrcodeLoad"]')
-		if link is None:
-			print("No need to sign in. Used session from last time.")
-			break
-		if link["src"].startswith("https://login.weixin.qq.com/qrcode/"):
-			qr_terminal_str(link["src"].replace("qrcode", "l"))
-			break
+	driver.get("https://wx.qq.com/")
+	link = driver.find_elements_by_xpath('//img[@mm-src-load="qrcodeLoad"]')
+	if len(link) == 0:
+		print("No need to sign in. Used session from last time.")
+	elif link[0].get_attribute("src").startswith("https://login.weixin.qq.com/qrcode/"):
+		qrTerminalStr(link[0].get_attribute("src").replace("qrcode", "l"))
 	#######################################################
 	try:
-		session.wait_for(lambda: session.at_xpath('//div[@ng-repeat="chatContact in chatList track by chatContact.UserName"]//span[@class="nickname_text ng-binding"]'), timeout=LOGINTIMEOUT)
-	except dryscrape.mixins.WaitTimeoutError:
+		WebDriverWait(driver, timeout=LOGINTIMEOUT).until(
+			EC.presence_of_element_located((By.XPATH, '//div[@ng-repeat="chatContact in chatList track by chatContact.UserName"]//span[@class="nickname_text ng-binding"]'))
+		)
+	except selenium.common.exceptions.TimeoutException:
 		print("Login timeout.")
+		driver.quit()
 		return None
-	return session
+	except:
+		printIfDebug()
+		return None
+	return driver
 
-def getRecentContactList(session):
-	for link in session.xpath('//div[@ng-repeat="chatContact in chatList track by chatContact.UserName"]//span[@class="nickname_text ng-binding"]'):
-		print("{:3} =>".format(len(recentContacts)), link.text())
-		recentContacts[len(recentContacts)] = link.text().strip()
+def getRecentContactList(driver):
+	for link in driver.find_elements_by_xpath('//div[@ng-repeat="chatContact in chatList track by chatContact.UserName"]//span[@class="nickname_text ng-binding"]'):
+		if link.text.strip() not in recentContacts:
+			recentContacts[link.text.strip()] = len(recentContacts)
+		print("{:3} =>".format(recentContacts[link.text.strip()]), link.text.strip())
 
-def chatWith(session, userName):
-	for link in session.xpath('//div[@ng-repeat="chatContact in chatList track by chatContact.UserName"]//span[@class="nickname_text ng-binding"]'):
-		if link.text().strip() == userName:
+def chatWith(driver, userName):
+	for link in driver.find_elements_by_xpath('//div[@ng-repeat="chatContact in chatList track by chatContact.UserName"]//span[@class="nickname_text ng-binding"]'):
+		if link.text.strip() == userName:
 			link.click()
 			break;
-	for message in session.xpath('//pre[@ng-bind-html="message.MMActualContent"]'):
-		print(message.text())
+	for message in driver.find_elements_by_xpath('//pre[@ng-bind-html="message.MMActualContent"]'):
+		print(message.text)
 	while True:
 		command = input(userName + "> ")
 		if command == "exit" or command == "quit":
 			break;
 		else:
-			editor = session.at_xpath('//pre[@id="editArea"]')
-			editor.set(command)
+			editor = driver.find_elements_by_xpath('//pre[@id="editArea"]')[0]
+			editor.send_keys(command)
 			
-			print(editor.text())
-			session.at_xpath('//a[@class="btn btn_send"]').click()
+			driver.find_elements_by_xpath('//a[@class="btn btn_send"]')[0].click()
+
+			
 
 def print_help():
 	usage = {}
@@ -117,28 +123,49 @@ def print_help():
 	print("=====================================")
 
 def main():
-	session = getLoginPage()
-	if session:
-		cookies = session.cookies()
-		with open("cookie", "w") as f:
-			for i in cookies:
-				f.write(i+"\n")
-		print("Welcome to simple WeChat. Show all the commands please enter \"help\".")
-	
-	while session:
-		command = input("> ")
-		if command == "exit" or command == "quit":
-			break;
-		if command == "help" or command == "?":
-			print_help()
-		if command == "ls" or command == "ll":
-			getRecentContactList(session)
-		if command.startswith("open "):
-			if len(recentContacts) == 0:
-				print("please use \"ls\" first.")
-			else:
-				chatWith(session, recentContacts[int(command[len("open "):].strip())])
-	print("Session destroyed.")
+	driver = None
+	try:
+		driver = getLoginPage()
+		if driver:
+			pickle.dump(driver.get_cookies() , open("cookies.pkl","wb"))
+			# with open("cookie", "w") as f:
+			# 	for cookie in driver.get_cookies():
+			# 		f.write(cookie['name'] + ":->" + cookie['value']+"\n")
+			print("Welcome to simple WeChat. Show all the commands please enter \"help\".")
+		
+		while driver:
+			try:
+				command = input("> ")
+				if command == "exit" or command == "quit":
+					break;
+				if command == "help" or command == "?":
+					print_help()
+				if command == "ls" or command == "ll":
+					getRecentContactList(driver)
+				if command.startswith("open "):
+					if len(recentContacts) == 0 or int(command[len("open "):]) >= len(recentContacts):
+						print("please use \"ls\" first.")
+					else:
+						for key, value in recentContacts.items():
+							if value == int(command[len("open "):]):
+								chatWith(driver, key)
+				if command.startswith("cd "):
+					if len(recentContacts) == 0 or int(command[len("cd "):]) >= len(recentContacts):
+						print("please use \"ls\" first.")
+					else:
+						for key, value in recentContacts.items():
+							if value == int(command[len("cd "):]):
+								chatWith(driver, key)
+			except:
+				printIfDebug()
+		driver.quit()
+	except Exception:
+		printIfDebug()
+	finally:
+		if driver != None:
+			driver.quit()
+		print("Session destroyed.")
+
 
 if __name__ == "__main__":
 	main()
